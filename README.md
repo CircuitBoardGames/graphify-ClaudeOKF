@@ -61,6 +61,12 @@ graphify-out/
 
 ---
 
+## Abstract
+
+Graphify turns any codebase, doc set, or mixed corpus (code, docs, papers, images, video) into a persistent, queryable knowledge graph. Code is parsed structurally with tree-sitter AST — deterministic, local, no LLM and no API key required; docs, papers, and images get a semantic pass from your assistant or a configured model. The pipeline runs community detection over the result and produces three portable outputs: an interactive `graph.html`, a GraphRAG-ready `graph.json`, and a plain-language `GRAPH_REPORT.md` — queryable afterward with `graphify query/path/explain` instead of re-reading files or grepping.
+
+This fork adds one change on top of upstream: the optional Obsidian vault export (`--obsidian`) is now a conformant [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle. Every note graphify writes — one per graph node, plus one per detected community — carries YAML frontmatter with a non-empty `type` (the spec's one hard conformance rule, §9), along with OKF's recommended `title`, `resource`, and `timestamp` fields. The vault still opens in Obsidian exactly as before; it's now also readable by any other OKF-aware tool, with no separate export step. See [`ARCHITECTURE.md`](ARCHITECTURE.md#obsidian-export-is-an-okf-bundle) for the mapping and `tests/test_obsidian_okf.py` for the conformance tests.
+
 ## See it in action
 
 <p align="center">
@@ -616,7 +622,7 @@ graphify-out/
 /graphify ./raw --directed         # preserve edge direction
 /graphify ./raw --cluster-only     # rerun clustering on existing graph
 /graphify ./raw --no-viz           # skip HTML visualization
-/graphify ./raw --obsidian         # generate Obsidian vault
+/graphify ./raw --obsidian         # generate Obsidian vault (OKF-conformant: every note has typed YAML frontmatter)
 /graphify ./raw --obsidian --obsidian-dir ~/vault  # write into an existing vault (never overwrites your own notes or .obsidian config)
 /graphify ./raw --wiki             # build agent-crawlable markdown wiki
 /graphify ./raw --svg              # export graph.svg
