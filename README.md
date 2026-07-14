@@ -1,3 +1,11 @@
+## Abstract
+
+Graphify turns any codebase, doc set, or mixed corpus (code, docs, papers, images, video) into a persistent, queryable knowledge graph. Code is parsed structurally with tree-sitter AST — deterministic, local, no LLM and no API key required; docs, papers, and images get a semantic pass from your assistant or a configured model. The pipeline runs community detection over the result and produces three portable outputs: an interactive `graph.html`, a GraphRAG-ready `graph.json`, and a plain-language `GRAPH_REPORT.md` — queryable afterward with `graphify query/path/explain` instead of re-reading files or grepping.
+
+This fork adds one change on top of upstream: the optional Obsidian vault export (`--obsidian`) is now a conformant [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle. Every note graphify writes — one per graph node, plus one per detected community — carries YAML frontmatter with a non-empty `type` (the spec's one hard conformance rule, §9), along with OKF's recommended `title`, `resource`, and `timestamp` fields. The vault still opens in Obsidian exactly as before; it's now also readable by any other OKF-aware tool, with no separate export step. See [`ARCHITECTURE.md`](ARCHITECTURE.md#obsidian-export-is-an-okf-bundle) for the mapping and `tests/test_obsidian_okf.py` for the conformance tests.
+
+---
+
 <p align="center">
   <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
 </p>
@@ -15,8 +23,6 @@
 </div>
 
 <p align="center">
-  <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
-  <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/>
@@ -38,7 +44,8 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
 **Get started** (30 seconds):
 
 ```bash
-uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
+# install this fork's CLI (or: pipx install "graphifyy @ ...", same source)
+uv tool install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"
 graphify install               # register the skill with your AI assistant
 ```
 
@@ -60,12 +67,6 @@ graphify-out/
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
-
-## Abstract
-
-Graphify turns any codebase, doc set, or mixed corpus (code, docs, papers, images, video) into a persistent, queryable knowledge graph. Code is parsed structurally with tree-sitter AST — deterministic, local, no LLM and no API key required; docs, papers, and images get a semantic pass from your assistant or a configured model. The pipeline runs community detection over the result and produces three portable outputs: an interactive `graph.html`, a GraphRAG-ready `graph.json`, and a plain-language `GRAPH_REPORT.md` — queryable afterward with `graphify query/path/explain` instead of re-reading files or grepping.
-
-This fork adds one change on top of upstream: the optional Obsidian vault export (`--obsidian`) is now a conformant [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle. Every note graphify writes — one per graph node, plus one per detected community — carries YAML frontmatter with a non-empty `type` (the spec's one hard conformance rule, §9), along with OKF's recommended `title`, `resource`, and `timestamp` fields. The vault still opens in Obsidian exactly as before; it's now also readable by any other OKF-aware tool, with no separate export step. See [`ARCHITECTURE.md`](ARCHITECTURE.md#obsidian-export-is-an-okf-bundle) for the mapping and `tests/test_obsidian_okf.py` for the conformance tests.
 
 ## See it in action
 
@@ -156,17 +157,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Install
 
-> **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
+> **This fork:** these instructions install from this fork's source (`CircuitBoardGames/graphify-ClaudeOKF`, `v8` branch), not the upstream `graphifyy` package on PyPI — upstream doesn't have the OKF-conformant Obsidian export described in the [Abstract](#abstract). The CLI command is still `graphify`.
 
 **Step 1 — install the package:**
 
 ```bash
 # Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
-uv tool install graphifyy
+uv tool install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"
 
 # Alternatives:
-pipx install graphifyy
-pip install graphifyy  # may need PATH setup — see note below
+pipx install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"
+pip install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"  # may need PATH setup — see note below
 ```
 
 **Step 2 — register the skill with your AI assistant:**
@@ -196,7 +197,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **`graphify: command not found`?** `uv tool install` / `pipx install` put the `graphify` command in their tool bin dir (`~/.local/bin`). If your shell can't find it right after install — common on a fresh macOS + zsh setup — that dir isn't on your `PATH` yet: run `uv tool update-shell` (or `pipx ensurepath`), then open a new terminal. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
 
-> **Running with `uvx` / `uv tool run` instead of installing?** Name the package, not the command: `uvx --from graphifyy graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
+> **Running with `uvx` / `uv tool run` instead of installing?** Name the package and this fork's source together: `uvx --from "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8" graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
 
 > **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
@@ -244,28 +245,28 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 
 | Extra | What it adds | Install |
 |---|---|---|
-| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf]"` |
-| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office]"` |
-| `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
-| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
-| `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
-| `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
-| `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
-| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
-| `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
-| `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
-| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
-| `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
-| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
-| `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
-| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
-| `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | Everything above | `uv tool install "graphifyy[all]"` |
+| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `google` | Google Sheets rendering | `uv tool install "graphifyy[google] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `svg` | SVG graph export | `uv tool install "graphifyy[svg] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
+| `all` | Everything above | `uv tool install "graphifyy[all] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` |
 
 </details>
 
@@ -333,18 +334,18 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (36 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (36 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install "graphifyy[dm] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
-| Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
+| Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install "graphifyy[terraform] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
-| Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
-| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
+| Office | `.docx .xlsx` (requires `uv tool install "graphifyy[office] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`) |
+| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install "graphifyy[google] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`) |
 | PDFs | `.pdf` |
 | Images | `.png .jpg .webp .gif` |
-| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
-| YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
+| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install "graphifyy[video] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`) |
+| YouTube / URLs | any video URL (requires `uv tool install "graphifyy[video] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`) |
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
@@ -354,7 +355,7 @@ in a headless extraction, install and authenticate the
 [`gws` CLI](https://github.com/googleworkspace/cli), then run:
 
 ```bash
-uv tool install "graphifyy[google]"  # needed for Google Sheets table rendering
+uv tool install "graphifyy[google] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"  # needed for Google Sheets table rendering
 gws auth login -s drive
 graphify extract ./docs --google-workspace
 ```
@@ -482,7 +483,7 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash
-> python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp]"
+> python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp] @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"
 > ```
 
 ---
@@ -543,12 +544,12 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 **`graphify: command not found` after installing**
 The CLI is installed but its bin directory isn't on your shell's `PATH`. Pick the fix for how you installed:
-- **uv** (`uv tool install graphifyy`): the command lands in uv's tool bin dir (`~/.local/bin`), which a fresh macOS/zsh setup often doesn't have on `PATH`. Run `uv tool update-shell`, then open a new terminal. (Find the dir with `uv tool dir --bin`.)
-- **pipx** (`pipx install graphifyy`): run `pipx ensurepath`, then open a new terminal.
-- **pip** (`pip install graphifyy`): pip installs scripts to a user bin dir that may not be on `PATH` — add `~/Library/Python/3.x/bin` (macOS) or `~/.local/bin` (Linux) to your `PATH` in `~/.zshrc`/`~/.bashrc`, or just run `python -m graphify`.
+- **uv** (`uv tool install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`): the command lands in uv's tool bin dir (`~/.local/bin`), which a fresh macOS/zsh setup often doesn't have on `PATH`. Run `uv tool update-shell`, then open a new terminal. (Find the dir with `uv tool dir --bin`.)
+- **pipx** (`pipx install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`): run `pipx ensurepath`, then open a new terminal.
+- **pip** (`pip install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"`): pip installs scripts to a user bin dir that may not be on `PATH` — add `~/Library/Python/3.x/bin` (macOS) or `~/.local/bin` (Linux) to your `PATH` in `~/.zshrc`/`~/.bashrc`, or just run `python -m graphify`.
 
 **`uvx graphify …` or `uv tool run graphify …` fails to resolve `graphify`**
-The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv tool run` treats the first word as a *package name*, so it looks for a package called `graphify` and reports `No solution found … no versions of graphify`. Name the package explicitly: `uvx --from graphifyy graphify install` (same as `uv tool run --from graphifyy graphify install`). Or `uv tool install graphifyy` once and then call `graphify` directly.
+The package is `graphifyy`; `graphify` is only the command it provides. `uv tool run` treats the first word as a *package name*, so it looks for a package called `graphify` and reports `No solution found … no versions of graphify`. Name the package (and this fork's source) explicitly: `uvx --from "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8" graphify install`. Or `uv tool install "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"` once and then call `graphify` directly.
 
 **`python -m graphify` works but `graphify` command doesn't**
 Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
@@ -598,7 +599,7 @@ ANTHROPIC_API_KEY=sk-... graphify extract ./docs --backend claude
 **Skill version mismatch warning in your IDE**
 Your installed graphify version is different from the skill file. Update:
 ```bash
-uv tool upgrade graphifyy
+uv tool install --reinstall "graphifyy @ git+https://github.com/CircuitBoardGames/graphify-ClaudeOKF@v8"
 graphify install  # overwrites the skill file
 ```
 
