@@ -30,6 +30,10 @@ Each stage is a single function in its own module. They communicate through plai
 | `watch.py` | `watch(root, flag_path)` | directory → writes flag file on change |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
+## Obsidian export is an OKF bundle
+
+`export.py`'s `to_obsidian()` writes an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-conformant vault: every node note and `_COMMUNITY_*.md` overview note carries YAML frontmatter with a non-empty `type` (spec §9), plus the recommended `title`, `resource`, and `timestamp` fields. `type` falls back to `"concept"` when a node has no `file_type` (mirroring `build.py`'s own normalization), so the guarantee holds even for a hand-built or legacy `graph.json`. Wikilinks (`[[Note]]`) are kept as the link form - Obsidian's own convention - rather than switched to OKF's markdown-link examples; §9 only requires the frontmatter, not a specific link syntax. See `tests/test_obsidian_okf.py`.
+
 ## Extraction output schema
 
 Every extractor returns:

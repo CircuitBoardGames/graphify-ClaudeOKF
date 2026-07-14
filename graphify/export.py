@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -479,6 +479,13 @@ def to_obsidian(
         "image": "graphify/image",
     }
 
+    # OKF (Open Knowledge Format) conformance: every note written below carries
+    # YAML frontmatter with a non-empty `type`, per spec §9. `export_timestamp`
+    # is shared by the whole run rather than stat'd per-file, so it reads as
+    # "this vault was (re)generated at T" rather than a fabricated per-note
+    # modification time we don't actually track.
+    export_timestamp = datetime.now(timezone.utc).isoformat()
+
     # Write one .md file per node
     node_notes_written = 0
     for node_id, data in G.nodes(data=True):
@@ -491,8 +498,11 @@ def to_obsidian(
         )
 
         # Build tags for this node
-        ftype = data.get("file_type", "")
-        ftype_tag = _FTYPE_TAG.get(ftype, f"graphify/{ftype}" if ftype else "graphify/document")
+        # OKF §9 requires a non-empty `type` on every note; fall back to
+        # "concept" the same way build.py normalizes a missing file_type, so a
+        # hand-built or legacy graph (no file_type attr) never emits `type: ""`.
+        ftype = data.get("file_type", "") or "concept"
+        ftype_tag = _FTYPE_TAG.get(ftype, f"graphify/{ftype}")
         dom_conf = _dominant_confidence(node_id)
         conf_tag = f"graphify/{dom_conf}"
         comm_tag = f"community/{_obsidian_tag(community_name)}"
@@ -500,17 +510,23 @@ def to_obsidian(
 
         lines: list[str] = []
 
-        # YAML frontmatter - readable in Obsidian's properties panel.
+        # YAML frontmatter - readable in Obsidian's properties panel, and an
+        # OKF-conformant concept record: `type` is always non-empty (§9);
+        # `title`, `resource`, and `timestamp` are OKF's recommended fields.
         # All scalars pass through _yaml_str so a hostile source_file or
         # community label cannot break out and inject sibling keys (F-009).
         lines += [
             "---",
-            f'source_file: "{_yaml_str(data.get("source_file", ""))}"',
             f'type: "{_yaml_str(ftype)}"',
+            f'title: "{_yaml_str(str(label))}"',
+            f'source_file: "{_yaml_str(data.get("source_file", ""))}"',
             f'community: "{_yaml_str(community_name)}"',
         ]
+        if data.get("source_file"):
+            lines.append(f'resource: "{_yaml_str(data["source_file"])}"')
         if data.get("source_location"):
             lines.append(f'location: "{_yaml_str(str(data["source_location"]))}"')
+        lines.append(f'timestamp: "{export_timestamp}"')
         # Add tags list to frontmatter
         lines.append("tags:")
         for tag in node_tags:
@@ -598,12 +614,15 @@ def to_obsidian(
 
         lines: list[str] = []
 
-        # YAML frontmatter
+        # YAML frontmatter (OKF-conformant: non-empty `type`, plus the
+        # recommended `title`/`timestamp` fields - see the node note above).
         lines.append("---")
         lines.append("type: community")
+        lines.append(f'title: "{_yaml_str(community_name)}"')
         if coh_value is not None:
             lines.append(f"cohesion: {coh_value:.2f}")
         lines.append(f"members: {n_members}")
+        lines.append(f'timestamp: "{export_timestamp}"')
         lines.append("---")
         lines.append("")
         lines.append(f"# {community_name}")

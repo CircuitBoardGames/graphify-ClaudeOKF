@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: the Obsidian export (`to_obsidian()`) is now an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-conformant bundle. Every node note and `_COMMUNITY_*.md` overview note carries a non-empty `type` in its YAML frontmatter (spec §9) plus the recommended `title`, `resource`, and `timestamp` fields; `type` falls back to `"concept"` when a node has no `file_type`, matching `build.py`'s own normalization, so the guarantee holds even for a hand-built or legacy `graph.json`. See `tests/test_obsidian_okf.py`.
+
 ## 0.9.15 (2026-07-13)
 
 - Fix: detection now honors nested `.gitignore`/`.graphifyignore` files below the scan root, not just those at the scan root and above (#1847, thanks @Mohak-Agrawal). git applies a `.gitignore` to everything under its own directory, but graphify only loaded ignore files from the VCS-root-down-to-scan-root chain — so a `vendor/sub/.gitignore` deeper in the tree was never read and its exclusions leaked into the graph. Each directory's own ignore files are now read during the walk and anchored to that directory, preserving last-match-wins precedence (nearer files win, including over `.git/info/exclude`) and the parent-exclusion rule.
