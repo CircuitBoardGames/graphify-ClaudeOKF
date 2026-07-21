@@ -2,11 +2,6 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-<<<<<<< HEAD
-## Unreleased
-
-- Feature: the Obsidian export (`to_obsidian()`) is now an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)-conformant bundle. Every node note and `_COMMUNITY_*.md` overview note carries a non-empty `type` in its YAML frontmatter (spec §9) plus the recommended `title`, `resource`, and `timestamp` fields; `type` falls back to `"concept"` when a node has no `file_type`, matching `build.py`'s own normalization, so the guarantee holds even for a hand-built or legacy `graph.json`. See `tests/test_obsidian_okf.py`.
-=======
 ## 0.9.24 (unreleased)
 
 - Fix: `graphify query` no longer prints `calls` edges backwards (#2080, thanks @Yyunozor). The graph on disk is correct, but the CLI loads it undirected and BFS/DFS collect edges in traversal order, so seeding on the callee rendered `callee --calls--> caller`. The renderer now recovers the stored direction from the edge's `_src`/`_tgt` (ignoring stray/dangling values), and both CLI `query` and MCP `query_graph` show the real direction.
@@ -140,7 +135,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: the dedup summary line reports the fuzzy-merge count even when there were no exact merges (#1857 / #1860, thanks @thejesh23). The fuzzy branch was nested inside `if exact_merges`, so a doc- or semantic-heavy run that merged only via the cross-file fuzzy pass printed a bare `Deduplicated N node(s).` with no breakdown. Both counts are now reported whenever non-zero.
 
 - Fix: the incremental semantic-cache checkpoint no longer fails on oversized (sliced) documents (#1870). The 0.9.14 batch-scoping fix built its per-chunk allowlist by reading `FileSlice.rel`, an attribute that does not exist (a `FileSlice` carries its parent file in `.path`), so every chunk containing a sliced document leaked the `FileSlice` object into the allowlist, `save_semantic_cache` raised `TypeError`, and the best-effort handler swallowed it: extraction still finished but those chunks were never checkpointed, so a re-run or a run resumed after a crash/rate-limit re-billed them. The allowlist now resolves each unit through `unit_path`, so a slice maps to its parent file and the checkpoint writes as intended.
->>>>>>> upstream/v8
 
 ## 0.9.15 (2026-07-13)
 
