@@ -1,0 +1,6 @@
+{
+  "true_upstream": "https://github.com/Graphify-Labs/graphify",
+  "true_upstream_branch": "v8",
+  "last_synced_upstream_sha": "961b78e57a10e9c5bb98421ff3e45b40be73542b",
+  "note": "Provenance marker for the CircuitBoardGames/ClaudeCode maintainer agent's P2 vendor-sync drift check (docs/agents/maintainer.md Part A.6a). last_synced_upstream_sha is this fork's merge-base with true_upstream at seed time; advance it in each true-upstream->fork sync PR. Seeded per ClaudeCode issue #46."
+}
