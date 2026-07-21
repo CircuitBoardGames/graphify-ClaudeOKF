@@ -69,6 +69,70 @@ def _drain_pending(out_dir: Path) -> list[Path]:
     return out
 
 
+# Build options that must survive into later rebuilds. The initial `extract`
+# scan honours `--exclude`, but `update`/`watch`/hook rebuilds re-run detect()
+# and would silently re-include excluded paths unless the patterns are persisted
+# (#1886). We store them beside the graph so any rebuild driver can re-apply them.
+_BUILD_CONFIG_FILENAME = ".graphify_build.json"
+
+
+def _write_build_config(
+    out_dir: Path,
+    *,
+    excludes: "list[str] | None",
+    gitignore: bool | None = None,
+) -> None:
+    """Persist corpus-shaping options under ``out_dir``.
+
+    Best effort and non clobbering: omitted options retain their existing values.
+    """
+    if not excludes and gitignore is None:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        try:
+            config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        if excludes:
+            config["excludes"] = list(excludes)
+        if gitignore is not None:
+            config["gitignore"] = gitignore
+        path.write_text(json.dumps(config), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_build_excludes(out_dir: Path) -> list[str]:
+    """Return the persisted ``--exclude`` patterns for this graph, or []."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            ex = cfg.get("excludes") if isinstance(cfg, dict) else None
+            if isinstance(ex, list):
+                return [str(x) for x in ex if isinstance(x, str) and x]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def _read_build_gitignore(out_dir: Path) -> bool:
+    """Return whether rebuilds should honor VCS ignore files (default True)."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("gitignore"), bool):
+                return cfg["gitignore"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return True
+
+
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     """Concatenate path lists, preserving order and dropping duplicates.
 
@@ -366,6 +430,21 @@ class _StoredSourcePaths:
             item["source_file"] = identity
 
 
+# A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
+# than a filesystem path: its on-disk existence is meaningless, so it must never be
+# evicted by the disk-absence sweep. Matched with a regex, NOT a literal "://",
+# because path normalization on the write side (Path.as_posix) collapses the double
+# slash to one — a stored "gdoc://x" reads back as "gdoc:/x" on the next update, and
+# a literal "://" check would then miss it and wrongly evict the node (#2051 follow-up).
+# The scheme is required to be 2+ chars so a Windows drive letter (C:/...) is not
+# misread as a remote source.
+_REMOTE_SOURCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+://?")
+
+
+def _is_remote_source(source_file: str) -> bool:
+    return bool(_REMOTE_SOURCE_RE.match(source_file))
+
+
 def _reconcile_existing_graph(
     existing_graph: Path,
     result: dict,
@@ -408,11 +487,11 @@ def _reconcile_existing_graph(
         }
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
+        # Deletion evicts edges regardless of tier; re-extraction only owns a
+        # source's AST-tier edges (checked per-edge below, #1865).
+        edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
-        edge_evicted_source_identities = (
-            node_evicted_source_identities | rebuilt_source_identities
-        )
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -431,10 +510,31 @@ def _reconcile_existing_graph(
         _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
-            if not source_file or _get_extractor(Path(source_file)) is None:
-                continue
+            if not source_file or _is_remote_source(source_file):
+                continue  # sourceless stub or remote/virtual source: never evict
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):
+                continue
+            if _get_extractor(Path(source_file)) is None:
+                # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
+                # never present in current_sources (built from AST-extractable
+                # code_files), so corpus absence is meaningless. Disk absence is
+                # the ONLY deletion evidence here — otherwise its semantic nodes
+                # are preserved forever and returned as authoritative even after
+                # the file is deleted (#2051). A present-but-unextractable file
+                # stays preserved (alive -> skip).
+                if identity:
+                    alive = _alive_cache.get(identity)
+                    if alive is None:
+                        alive = Path(identity).exists()
+                        _alive_cache[identity] = alive
+                    if not alive:
+                        normalized = source_paths.normalize(source_file)
+                        if normalized:
+                            deleted_paths.add(normalized)
+                        node_evicted_source_identities.add(identity)
+                        edge_evicted_source_identities.add(identity)
+                        hyperedge_evicted_source_identities.add(identity)
                 continue
             if identity not in current_sources:
                 if identity:
@@ -485,14 +585,22 @@ def _reconcile_existing_graph(
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
-        # Edges are owned by source_file. Re-extraction must replace an owner's
-        # previous edges, while edges from unchanged or semantic sources survive.
+        # Edges are owned by source_file, but ownership is tier-scoped: the AST
+        # pass replaces a re-extracted source's AST edges, while that source's
+        # semantic/LLM edges — which the AST pass cannot regenerate — survive
+        # until a semantic re-extraction supersedes them. Same provenance rule
+        # the node reconciliation above applies via _origin (#1865). Deletion
+        # eviction stays provenance-blind.
         preserved_edges = [
             edge
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                edge.get("_origin") == "ast"
+                and source_paths.is_evicted(edge, rebuilt_source_identities)
+            )
         ]
 
         new_hyperedge_ids = {
@@ -649,7 +757,17 @@ def _check_shrink(
     plain ``graphify update`` after deleting a function refresh the graph without
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     """
-    if force or not existing_data or had_explicit_deletions:
+    if force or not existing_data:
+        return True
+    if had_explicit_deletions and rebuilt_sources is None:
+        # Legacy callers declare deletions but pass no rebuilt_sources, so the
+        # per-source accounting below can't run — keep the wholesale bypass for
+        # them. When rebuilt_sources IS given, deleted paths are folded into it
+        # (see call site), so genuine deletions still pass the _accounted check
+        # while an unexplained loss (a present-but-unextractable file wrongly
+        # routed to _add_deleted_source, or a dropped semantic node) is still
+        # caught rather than being waved through by the mere presence of any
+        # deletion in the change set (#2056).
         return True
     existing_nodes = existing_data.get("nodes", [])
     new_nodes = new_data.get("nodes", [])
@@ -819,19 +937,87 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        # Re-apply the excludes the initial extract recorded, so an update/watch/
+        # hook rebuild does not silently re-include deliberately excluded paths
+        # (#1886).
+        _persisted_excludes = _read_build_excludes(out)
+        detected = detect(
+            watch_path, follow_symlinks=follow_symlinks,
+            extra_excludes=_persisted_excludes or None,
+            gitignore=_read_build_gitignore(out),
+        )
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
+        ast_doc_files: list[Path] = []
         for doc_file in detected['files'].get('document', []):
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
+                ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
+
+        # #1915: a document that already carries SEMANTIC (LLM) nodes in the
+        # existing graph must not ALSO be AST-quick-scanned — otherwise every
+        # rebuild mints heading nodes on top of the preserved semantic nodes
+        # and the doc is represented twice (~4x graph bloat vs the CLI update
+        # path, which AST-extracts only code). Semantic supersedes AST per doc
+        # source: the quick-scan stays as a fallback for docs with no semantic
+        # layer (the no-LLM doc-structure feature, #09b33b7) and for brand-new
+        # docs the graph has never seen. These docs stay in ``code_files`` so
+        # corpus membership (#1795 fail-closed deletion evidence) and the
+        # shrink accounting below still cover them — a previously-bloated
+        # graph must be allowed to self-heal on a full rebuild without the
+        # shrink-guard refusing the smaller write.
+        semantic_doc_files: set[Path] = set()
+        if ast_doc_files and existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+                prior_paths = _StoredSourcePaths(
+                    prior,
+                    out=out,
+                    project_root=project_root,
+                    watch_root=watch_root,
+                    normalize_source=_nsf,
+                )
+                # Semantic doc nodes lack the AST origin marker. Gate on the
+                # doc-shaped subset of the six-value file_type enum
+                # (document/concept/rationale/paper AND code) rather than
+                # "document" alone: per the extraction spec, a doc full of named
+                # concepts may be represented with ONLY concept/rationale
+                # nodes and no separate "document" node — that's still
+                # evidence of a semantic layer, not a marker-less AST node
+                # (#1954). "code" is included too (#2014): the semantic pass
+                # legitimately mints code-typed nodes for symbols surfaced from
+                # WITHIN a doc (llm.py `_bind_node_evidence`), and it cannot be
+                # confused with a pre-#1865 marker-less AST code node — those are
+                # sourced from code files, which never intersect ast_doc_files
+                # below, whereas the AST quick-scan of a doc only ever mints
+                # "document" nodes (extractors/markdown.py). "image" stays out.
+                semantic_doc_identities: set[str] = set()
+                for node in prior.get("nodes", []):
+                    if node.get("_origin") == "ast":
+                        continue
+                    if node.get("file_type") not in (
+                        "document", "concept", "rationale", "paper", "code"
+                    ):
+                        continue
+                    identity = prior_paths.identity(node.get("source_file"))
+                    if identity:
+                        semantic_doc_identities.add(identity)
+                if semantic_doc_identities:
+                    semantic_doc_files = {
+                        p for p in ast_doc_files
+                        if prior_paths.absolute_identity(str(p), project_root)
+                        in semantic_doc_identities
+                    }
+            except Exception:
+                semantic_doc_files = set()
 
         # Incremental path: when the caller passed an explicit change list,
         # extract only changed-and-still-existing files. Deleted paths are
@@ -845,6 +1031,12 @@ def _rebuild_code(
 
         if changed_paths is not None:
             code_set = {Path(os.path.abspath(p)) for p in code_files}
+            # #1915: semantic-backed docs are never AST-quick-scanned; their
+            # semantic nodes are the sole representation. Mirroring #1865's
+            # tier-scoped edge rule at the node level, they also must NOT
+            # enter extract_targets (hence rebuilt/node-evicted identities) on
+            # an incremental rebuild, or their semantic nodes would be wiped.
+            semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
@@ -855,7 +1047,7 @@ def _rebuild_code(
                 )
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
-                    if tracked not in wanted:
+                    if tracked not in wanted and tracked not in semantic_doc_set:
                         wanted.append(tracked)
                     continue
 
@@ -868,8 +1060,16 @@ def _rebuild_code(
                 )
                 if existing_in_root is not None:
                     # The path exists under the watched root but detect filtered
-                    # it out. Evict any stale nodes that still claim it.
-                    _add_deleted_source(existing_in_root)
+                    # it out of code_set (no AST extractor, excluded, or
+                    # sensitive). Existence is NOT deletion evidence (#2056): the
+                    # file may carry semantic (LLM) nodes an AST rebuild cannot
+                    # regenerate, and mis-routing it to _add_deleted_source both
+                    # evicts those nodes AND sets had_explicit_deletions, which
+                    # disables the shrink guard that would otherwise catch the
+                    # loss. Preserve it — a genuine deletion still evicts via the
+                    # branch below, the corpus sweep evicts a truly-gone non-AST
+                    # source, and a deliberate exclusion is purged by a full
+                    # re-extraction.
                     continue
 
                 deleted_in_root = next(
@@ -885,7 +1085,12 @@ def _rebuild_code(
                 return True
             extract_targets = wanted
         else:
-            extract_targets = code_files
+            # Full rebuild: skip the AST quick-scan for semantic-backed docs
+            # (#1915). They remain in code_files, so stale _origin=="ast"
+            # heading nodes from a previously-bloated graph are dropped by the
+            # full-rebuild AST ownership rule while the shrink accounting
+            # below still counts the doc as a rebuilt source.
+            extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
         commit = _git_head()
         result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
@@ -968,7 +1173,14 @@ def _rebuild_code(
 
             try:
                 from graphify.detect import save_manifest
-                save_manifest(detected["files"], kind="ast", root=project_root)
+                # detected["files"] is a FULL detect of the watched root, so
+                # pass it as the scan corpus too: rows for files that left the
+                # scan but still exist on disk (newly excluded) are pruned
+                # instead of surviving as phantom "deleted" entries (#1908).
+                save_manifest(
+                    detected["files"], kind="ast", root=project_root,
+                    scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                )
             except Exception:
                 pass
 
@@ -1007,7 +1219,11 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    save_manifest(detected["files"], kind="ast", root=project_root)
+                    # Full-scan save: prune excluded-but-alive rows (#1908).
+                    save_manifest(
+                        detected["files"], kind="ast", root=project_root,
+                        scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                    )
                 except Exception:
                     pass
                 flag = out / "needs_update"
@@ -1026,7 +1242,12 @@ def _rebuild_code(
         labels_file = out / ".graphify_labels.json"
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
-            labels = {int(k): v for k, v in raw.items() if int(k) in communities}
+            # Skip persisted "Community N" placeholders so the hub-fill below
+            # replaces them instead of perpetuating them on every rebuild (#2073).
+            labels = {
+                int(k): v for k, v in raw.items()
+                if int(k) in communities and v != f"Community {int(k)}"
+            }
         except Exception:
             raw = {}
             labels = {}
@@ -1085,7 +1306,11 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            save_manifest(detected["files"], kind="ast", root=project_root)
+            # Full-scan save: prune excluded-but-alive rows (#1908).
+            save_manifest(
+                detected["files"], kind="ast", root=project_root,
+                scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+            )
         except Exception:
             pass
 
@@ -1197,7 +1422,10 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # without this short-circuit a busy volume can saturate a CPU core
     # discarding events one extension at a time. (gh-928)
     watch_root_for_ignore = watch_path.resolve()
-    ignore_patterns = _load_graphifyignore(watch_root_for_ignore)
+    ignore_patterns = _load_graphifyignore(
+        watch_root_for_ignore,
+        gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
+    )
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
