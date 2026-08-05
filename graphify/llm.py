@@ -1044,6 +1044,30 @@ def _parse_llm_json(raw: str) -> dict:
     return {"nodes": [], "edges": [], "hyperedges": []}
 
 
+def _bedrock_response_text(resp: dict, default: str = "") -> str:
+    """Return the first Converse content block that carries text.
+
+    Converse returns ``output.message.content`` as a list of blocks, and the
+    API does not promise a text block is first: reasoning-capable models emit a
+    ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
+    block types can precede it too. Indexing position 0 therefore yields no text
+    at all for those models, which reads downstream as a hollow response, gets
+    reclassified as truncation, and sends the chunk into bisection that cannot
+    converge. Select on the block's shape instead of its position so this holds
+    for any model; a response whose first block is already text is unaffected.
+    """
+    content = resp.get("output", {}).get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return default
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return default
+
+
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     """Detect a successful HTTP response that yielded no usable extraction.
 
@@ -1337,6 +1361,62 @@ def _claude_cli_envelope(stdout: str) -> dict:
     return envelope
 
 
+# A JSON Schema pinning the top-level shape graphify consumes. Passed to
+# `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
+# to emit the object directly instead of relying on it CHOOSING to honour a
+# "raw JSON only" instruction in the prompt. Item internals stay loose so a
+# valid extraction is never rejected; the `result` envelope field still carries
+# the JSON string, so the parse path is unchanged. See #2076.
+_EXTRACTION_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "nodes": {"type": "array", "items": {"type": "object"}},
+            "edges": {"type": "array", "items": {"type": "object"}},
+            "hyperedges": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["nodes", "edges"],
+    }
+)
+
+# Cache the `--json-schema` capability probe per resolved claude command so it
+# runs at most once per process (extract fans a chunk out per file/slice).
+_JSON_SCHEMA_SUPPORT: dict[str, bool] = {}
+
+
+def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
+    """Return True if this Claude Code CLI accepts ``--json-schema``.
+
+    Structured output (``--json-schema``) landed in newer Claude Code releases.
+    Probing ``claude --help`` for the flag is a direct capability check — more
+    reliable than guessing a version boundary — so graphify uses structured
+    output where it exists and falls back to the user-turn prompt on older CLIs
+    that predate it. Any probe failure is treated as "unsupported" (safe
+    fallback). Result is cached per resolved command.
+    """
+    import subprocess
+
+    cached = _JSON_SCHEMA_SUPPORT.get(claude_cmd)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [claude_cmd, "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            **_no_window_kwargs(),
+        )
+        supported = "--json-schema" in (proc.stdout or "")
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    _JSON_SCHEMA_SUPPORT[claude_cmd] = supported
+    return supported
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -1425,6 +1505,16 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     cli_model = os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
     if cli_model:
         cli_args.extend(["--model", cli_model])
+    # Constrain the output shape structurally where the CLI supports it. Newer
+    # Claude Code releases increasingly treat a bare file-dump prompt as an
+    # agentic task and REPORT the extraction in prose ("Knowledge graph
+    # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
+    # zero nodes, reads as truncation, and gets bisected without ever
+    # converging (#2076). --json-schema pins the object shape regardless of
+    # that framing; the user-turn prompt above stays as the fallback for older
+    # CLIs that predate the flag.
+    if _claude_cli_supports_json_schema(claude_cmd):
+        cli_args.extend(["--json-schema", _EXTRACTION_JSON_SCHEMA])
     proc = subprocess.run(
         cli_args,
         input=combined_message,
@@ -1443,7 +1533,17 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
 
     envelope = _claude_cli_envelope(proc.stdout)
 
-    raw_content = envelope.get("result", "")
+    # When --json-schema is in effect the CLI puts the CONSTRAINED object in the
+    # `structured_output` envelope field; `result` stays the model's discretionary
+    # text, which on a "reporting" turn is prose even with the flag set (verified
+    # live on Claude Code 2.1.185). Prefer the structured channel and route it
+    # through the same _parse_llm_json normalizer; fall back to parsing `result`
+    # for older CLIs that don't emit structured_output (#2076 review).
+    structured = envelope.get("structured_output")
+    if isinstance(structured, dict):
+        raw_content = json.dumps(structured)
+    else:
+        raw_content = envelope.get("result", "")
     result = _parse_llm_json(raw_content or "{}")
     usage = envelope.get("usage") or {}
     result["input_tokens"] = (
@@ -1533,6 +1633,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     """Call AWS Bedrock via boto3 Converse API using the standard AWS credential chain."""
     try:
         import boto3
+        import botocore.config
         import botocore.exceptions
     except ImportError as exc:
         raise ImportError(
@@ -1542,7 +1643,19 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     profile = os.environ.get("AWS_PROFILE")
     session = boto3.Session(profile_name=profile, region_name=region)
-    client = session.client("bedrock-runtime")
+    # Wire GRAPHIFY_API_TIMEOUT into the botocore read timeout. Without an
+    # explicit config, Converse uses botocore's 60s default and a long
+    # generation dies with "Read timeout on endpoint URL" no matter what the
+    # env var / --api-timeout is set to — the same gap #1112/#1442 closed for
+    # the claude-cli and secondary-dispatch paths, on the last cloud backend.
+    client = session.client(
+        "bedrock-runtime",
+        config=botocore.config.Config(
+            read_timeout=_resolve_api_timeout(),
+            connect_timeout=10,
+            retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+        ),
+    )
 
     try:
         resp = client.converse(
@@ -1556,7 +1669,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
         msg = exc.response["Error"]["Message"]
         raise RuntimeError(f"Bedrock API error ({code}): {msg}") from exc
 
-    text = resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "{}")
+    text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
     result["input_tokens"] = usage.get("inputTokens", 0)
@@ -2489,12 +2602,20 @@ def _call_llm(
     if backend == "bedrock":
         try:
             import boto3
+            import botocore.config
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
-        client = session.client("bedrock-runtime")
+        client = session.client(
+            "bedrock-runtime",
+            config=botocore.config.Config(
+                read_timeout=_resolve_api_timeout(),
+                connect_timeout=10,
+                retries={"max_attempts": _resolve_max_retries() + 1, "mode": "adaptive"},
+            ),
+        )
         resp = client.converse(
             modelId=mdl,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
@@ -2503,7 +2624,7 @@ def _call_llm(
         bu = resp.get("usage") or {}
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
-        return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        return _bedrock_response_text(resp, default="")
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
